@@ -1,0 +1,62 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+
+.program ym3012_dac
+
+    set x, 12            ; Preload bit counter, delay until eye of first data bit
+    wait 0 pin 1        ; Wait for SAM HIGH
+    wait 1 pin 1        ; Wait for SAM LOW
+    ; ignore first three bits, as specified in data sheet
+    wait 1 pin 2        ; Wait for clock HIGH
+    wait 0 pin 2        ; Wait for clock LOW
+    wait 1 pin 2        ; Wait for clock HIGH
+    wait 0 pin 2        ; Wait for clock LOW
+    wait 1 pin 2        ; Wait for clock HIGH
+bitloop: ; Loop x times
+    wait 0 pin 2        ; Wait for clock LOW
+    wait 1 pin 2        ; Wait for clock HIGH
+    in pins, 1          ; Sample data
+    jmp x-- bitloop     ;
+
+
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/gpio.h"
+
+#define YM3012_CLK 1790000
+
+static inline void ym3012_dac_init(PIO pio, uint sm, uint offset, uint pin_base) {
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_base, 3, false);
+    pio_gpio_init(pio, pin_base);
+//     gpio_pull_up(pin_base);
+
+    pio_sm_config c = ym3012_dac_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, pin_base);
+    // Shift existing values to the right when new value comes in
+    // The YM3012 receives D0 first, which is the least significant bit
+    sm_config_set_in_shift(&c, true, true, 13);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+    float div = (float)clock_get_hz(clk_sys) / (YM3012_CLK*6); // TODO: 4 * actual clock rate would be nice // "For example, the YM2151 internally divides the clock by 2, and has 32 operators to iterate through. Thus, for a nominal input lock of 3.58MHz, you end up at around a 55.9kHz sample rate." https://github.com/aaronsgiles/ymfm/blob/main/README.md
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+static inline uint16_t ym3012_dac_get_sample(PIO pio, uint sm) {
+    // 10-bit read from the FIFO (data is left-justified)
+    uint16_t data_and_exp, data;
+    uint8_t exp;
+    io_rw_32 *rxfifo_shift = (io_rw_32*)&(pio->rxf[sm]);
+    while (pio_sm_is_rx_fifo_empty(pio, sm))
+        tight_loop_contents();
+    data_and_exp = (uint16_t)(*rxfifo_shift >> 19);
+    exp = ((~data_and_exp >> 10) & 0b111); // top 3 bits, negated
+    data = data_and_exp & 0b1111111111; // lower 10 bits
+//     printf("%d %d %d %d\n", (uint16_t)*rxfifo_shift, data_and_exp, data, exp);
+    return data / exp;
+}
+%}

@@ -20,6 +20,7 @@ include(example_auto_set_url.cmake)
 
 add_compile_options(-Wall -Wextra
         -Wno-format          # int != int32_t as far as the compiler is concerned because gcc has int32_t as long int
+        -O4
         -Wno-unused-function # we have some for the docs that aren't called
         -Wno-maybe-uninitialized
         )
